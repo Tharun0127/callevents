@@ -1,8 +1,48 @@
 # Call Events Service
 
+[![ci](https://github.com/Tharun0127/callevents/actions/workflows/ci.yml/badge.svg)](https://github.com/Tharun0127/callevents/actions/workflows/ci.yml)
+![Python 3.12](https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
+![Postgres 16](https://img.shields.io/badge/Postgres-16-4169E1?logo=postgresql&logoColor=white)
+![RabbitMQ 4](https://img.shields.io/badge/RabbitMQ-4.1-FF6600?logo=rabbitmq&logoColor=white)
+![Redis 7](https://img.shields.io/badge/Redis-7.4-DC382D?logo=redis&logoColor=white)
+![mypy strict](https://img.shields.io/badge/mypy-disallow__untyped__defs-2A6DB2)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Telephony providers send us call event webhooks. This service verifies and stores each event exactly once, then fans it out to every webhook endpoint the owning tenant has subscribed, with signed payloads, retries with backoff, a dead letter table and replay. Tenants read their events and delivery status back over a paginated, rate limited API.
 
 Stack: FastAPI on uvicorn, Postgres 16 through SQLAlchemy 2.0 with Alembic migrations, Celery workers on RabbitMQ, Redis for caching, rate limiting and circuit breaking, pytest, Docker and docker compose, Python 3.12.
+
+## At a glance
+
+| Claim | Proof |
+|---|---|
+| **769 webhooks/s** ingested on one laptop, p99 140 ms, 0% service errors | Load test run 1, raw Locust CSV in [`loadtest/results/`](loadtest/results/) |
+| **252 ms p50 / 373 ms p99** ingest to delivered at a steady 60 events/s | [`run3_lag.txt`](loadtest/results/run3_lag.txt), measured from Postgres timestamps |
+| **0 duplicate sends** across 100k+ deliveries, with 10% of receiver calls failing on purpose | The receiver counts repeated `Idempotency-Key`s on success; see the lag reports |
+| **0 lost events** while the API outran the workers about 10 to 1 | Run 2: 27,059 events, 37,856 deliveries, 0 dead, backlog drained afterwards |
+| Concurrent duplicate webhooks store **exactly one** row | `test_concurrent_duplicates_insert_one_row` (8 parallel copies) |
+| Racing workers send **exactly once** | `test_concurrent_workers_send_exactly_once` (6 threads released from a barrier) |
+| Cursor pagination never skips or repeats under concurrent writes | `test_cursor_pagination_returns_every_row_once_while_rows_are_inserted` (137 rows, 5 inserts between pages) |
+| Tenants cannot see or touch each other's data | `test_tenant_isolation` (list, fetch, filter, replay, update, delete) |
+| Rate limiter is atomic across processes | 25 concurrent requests against a limit of 10 yield exactly 10 (Redis Lua) |
+| Load testing found real bugs, and they were fixed | Three throughput bugs found in run 1, fixed in one commit, re-measured (see [Load test](#load-test)) |
+| One command cold start, production override, CI on every push | `docker compose up --build`; [`docker-compose.prod.yml`](docker-compose.prod.yml); lint, mypy, 45 tests against real Postgres/Redis/RabbitMQ, image build |
+
+```mermaid
+flowchart LR
+    P[Telephony providers<br/>AcmeTel, Voxly] -- signed webhook --> API[FastAPI<br/>verify, dedupe, store]
+    API -- INSERT ON CONFLICT --> PG[(Postgres 16)]
+    API -- publish after commit --> MQ[[RabbitMQ<br/>fanout, deliveries,<br/>retries, maintenance]]
+    MQ --> W[Celery workers<br/>fanout + delivery]
+    W <--> R[(Redis<br/>cache, token bucket,<br/>circuit breaker)]
+    W -- claim / status --> PG
+    W -- HMAC signed POST,<br/>retries 1-4-16-64-256 s --> T[Tenant endpoints]
+    B[Celery beat<br/>dispatcher, reaper, sweeper] --> MQ
+    C[Tenant clients] -- API key, cursor pages,<br/>sliding window limit --> API
+```
+
+**Contents:** [Request lifecycle](#request-lifecycle) · [Idempotency](#idempotency) · [Cursor pagination](#why-cursor-pagination-over-offset) · [Retries and dead letters](#retry-and-dead-letter-policy) · [Rate limiting and circuit breaking](#rate-limiting-and-circuit-breaking) · [Load test](#load-test) · [Run locally](#run-locally) · [API](#api) · [Operations](#operations) · [Design decisions](#design-decisions-and-tradeoffs) · [Deployment](#deployment) · [Limitations](#limitations-and-what-i-would-change)
 
 ## Request lifecycle
 
@@ -119,7 +159,7 @@ Every transition is written to the `circuit_events` table, counted in `circuit_t
 
 ## Load test
 
-**Where and how this was measured.** All numbers are from a single laptop: Intel Core i5 1340P (12 cores, 16 threads), 16 GB RAM, Windows 11. Docker could not run on that machine during this work (see "What was verified" below), so the stack ran as native processes against the same versions of the infrastructure the compose file uses (Postgres 16, Redis, RabbitMQ 4): the API under uvicorn with 4 worker processes, Celery workers with the threads pool and 32 threads each, Celery beat, and the test receiver (20 ms added latency, 10% of requests answered with a 500). Locust ran on the same machine, so the load generator competed with the system under test for CPU, and free memory was around 2 GB throughout. These are numbers for this code on this machine, not a capacity claim for any production setup.
+**Where and how this was measured.** All numbers are from a single laptop: Intel Core i5 1340P (12 cores, 16 threads), 16 GB RAM, Windows 11. Docker was not available on that machine when these runs were made, so the stack ran as native processes against the same versions of the infrastructure the compose file uses (Postgres 16, Redis, RabbitMQ 4): the API under uvicorn with 4 worker processes, Celery workers with the threads pool and 32 threads each, Celery beat, and the test receiver (20 ms added latency, 10% of requests answered with a 500). Locust ran on the same machine, so the load generator competed with the system under test for CPU, and free memory was around 2 GB throughout. These are numbers for this code on this machine, not a capacity claim for any production setup.
 
 | Run | Scenario | Workers | Duration | Throughput | p50 | p95 | p99 | Error rate |
 |---|---|---|---|---|---|---|---|---|
@@ -183,7 +223,7 @@ OpenAPI docs are at `http://localhost:8000/docs`. RabbitMQ's management UI is at
 
 ```bash
 pip install -e ".[dev]"
-pytest -q              # 41 tests, about 20 s
+pytest -q              # 45 tests, under a minute
 ruff check . && ruff format --check . && mypy app
 ```
 
@@ -263,10 +303,10 @@ The service needs four long running processes (API, worker, beat, RabbitMQ) plus
 
 **What was verified and how.**
 
-* The test suite (41 tests) passes against real Postgres 16, Redis and RabbitMQ 4, as do `ruff check`, `ruff format --check`, `mypy app`, and an Alembic upgrade, downgrade and `alembic check` (no drift between models and migrations).
+* The test suite (45 tests) passes against real Postgres 16, Redis and RabbitMQ 4, as do `ruff check`, `ruff format --check`, `mypy app`, and an Alembic upgrade, downgrade and `alembic check` (no drift between models and migrations).
 * The full pipeline (signed webhook, dedupe, fanout, signed delivery, retries, metrics, request id propagation into worker logs) was exercised end to end, and the load tests above ran against it.
 * The docker compose stack was run from nothing with `docker compose up --build`: migrations and seed ran, every service came up healthy, a signed webhook was ingested, fanned out and delivered to both receiver endpoints, the metrics endpoints reported it, `docker compose stop` gave the worker a warm shutdown, and a restart re-ran the migrate job as a no-op. The production override was run the same way: the seed was skipped, the demo key was rejected, only port 8000 was published, and RabbitMQ kept its durable queues across a container recreate.
-* The GitHub Actions workflow has not run yet because the repository has not been pushed.
+* GitHub Actions runs lint (ruff, mypy), the migrations round trip, the full test suite against Postgres, Redis and RabbitMQ service containers, and the image build plus both compose files on every push.
 
 **What is not production ready.**
 
