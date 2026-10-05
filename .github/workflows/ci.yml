@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: ruff lint
+        run: ruff check .
+      - name: ruff format
+        run: ruff format --check .
+      - name: mypy
+        run: mypy app
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: callevents
+          POSTGRES_PASSWORD: callevents
+          POSTGRES_DB: callevents_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U callevents" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 3s
+          --health-timeout 3s --health-retries 20
+      rabbitmq:
+        image: rabbitmq:4.1-alpine
+        ports: ["5672:5672"]
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q check_port_connectivity"
+          --health-interval 5s --health-timeout 10s --health-retries 30
+    env:
+      TEST_DATABASE_URL: postgresql://callevents:callevents@localhost:5432/callevents_test
+      TEST_REDIS_URL: redis://localhost:6379/15
+      BROKER_URL: amqp://guest:guest@localhost:5672//
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: migrations apply and match the models
+        env:
+          DATABASE_URL: postgresql://callevents:callevents@localhost:5432/callevents_test
+        run: |
+          alembic upgrade head
+          alembic check
+          alembic downgrade base
+      - name: tests
+        run: pytest -q
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build image
+        run: docker build -t callevents:ci .
+      - name: compose config is valid
+        run: docker compose config -q

@@ -1,0 +1,16 @@
+# Railway deploys one service per railway.toml. This describes the API service; the worker,
+# beat and migrate roles reuse the same image with a different start command (see README,
+# "Deployment"). Postgres, Redis and RabbitMQ would be Railway plugins or external services.
+# Not deployed: local docker compose is the supported environment for this project.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "/usr/local/bin/entrypoint.sh api"
+preDeployCommand = ["/usr/local/bin/entrypoint.sh migrate"]
+healthcheckPath = "/readyz"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 5
