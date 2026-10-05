@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     delivery_backoff_jitter: float = 0.2
     delivery_lease_seconds: int = 120
     delivery_dispatch_grace_seconds: int = 60
+    # The dispatcher recovers deliveries whose message was lost. While the delivery queues hold
+    # more than this many messages, an overdue row is far more likely to be queued than lost,
+    # so the sweep is skipped instead of piling duplicate messages onto the backlog.
+    delivery_dispatch_max_queue_depth: int = 1000
 
     # Outbound per endpoint token bucket defaults (overridable per endpoint).
     endpoint_rate_per_second: float = 50.0

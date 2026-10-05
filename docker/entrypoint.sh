@@ -21,7 +21,7 @@ case "$role" in
   worker)
     exec celery -A app.celery_app worker \
       --pool=threads --concurrency="${WORKER_CONCURRENCY:-32}" \
-      -Q fanout,deliveries,maintenance \
+      -Q fanout,deliveries,delivery_retries,maintenance \
       --without-mingle --without-gossip --loglevel="${LOG_LEVEL:-INFO}"
     ;;
   beat)

@@ -7,7 +7,6 @@ from collections.abc import Iterator
 from fastapi import APIRouter, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
-from kombu import Connection
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     REGISTRY,
@@ -19,7 +18,7 @@ from prometheus_client.core import GaugeMetricFamily
 from prometheus_client.registry import Collector
 from sqlalchemy import func, select, text
 
-from app.config import get_settings
+from app.broker import broker_ping, queue_depths
 from app.db import async_session_factory
 from app.models import Delivery
 from app.redis_client import get_async_redis
@@ -27,28 +26,7 @@ from app.redis_client import get_async_redis
 router = APIRouter(tags=["ops"])
 log = logging.getLogger(__name__)
 
-QUEUES = ("fanout", "deliveries", "maintenance")
 _CHECK_TIMEOUT = 2.0
-
-
-def _broker_ping() -> None:
-    with Connection(get_settings().broker_url, connect_timeout=_CHECK_TIMEOUT) as conn:
-        conn.ensure_connection(max_retries=1)
-
-
-def broker_queue_depths() -> dict[str, int]:
-    depths: dict[str, int] = {}
-    with Connection(get_settings().broker_url, connect_timeout=_CHECK_TIMEOUT) as conn:
-        channel = conn.channel()
-        for q in QUEUES:
-            try:
-                _, count, _ = channel.queue_declare(queue=q, passive=True)  # type: ignore[attr-defined]
-                depths[q] = int(count)
-            except Exception:
-                # Passive declare of a missing queue closes the channel; reopen and move on.
-                depths[q] = 0
-                channel = conn.channel()
-    return depths
 
 
 @router.get("/healthz", include_in_schema=False)
@@ -67,7 +45,7 @@ async def readyz() -> JSONResponse:
         await get_async_redis().ping()
 
     async def check_broker() -> None:
-        await run_in_threadpool(_broker_ping)
+        await run_in_threadpool(broker_ping)
 
     checks = {"postgres": check_db(), "redis": check_redis(), "rabbitmq": check_broker()}
     results: dict[str, str] = {}
@@ -110,7 +88,7 @@ async def _sample_backlog() -> tuple[dict[str, int], dict[str, int]]:
     if time.monotonic() - ts < 5:
         return depths, statuses
     try:
-        depths = await run_in_threadpool(broker_queue_depths)
+        depths = await run_in_threadpool(queue_depths)
     except Exception:
         log.warning("queue depth sample failed")
     try:

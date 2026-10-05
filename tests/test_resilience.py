@@ -207,3 +207,38 @@ async def test_readyz_reports_unavailable_dependency(api: httpx.AsyncClient) -> 
     r = await api.get("/readyz")
     assert r.status_code == 503
     assert r.json()["checks"]["rabbitmq"].startswith("error")
+
+
+def test_dispatcher_recovers_lost_messages_but_not_while_queues_are_backed_up(
+    tenant: TenantFixture, receiver: respx.MockRouter, monkeypatch: object
+) -> None:
+    import pytest
+    from sqlalchemy import update
+
+    from app import tasks
+    from app.models import Delivery
+
+    route = receiver.post("/hook").respond(200)
+    delivery_id = insert_delivery(tenant.id, insert_event(tenant.id), tenant.endpoint_ids[0])
+    # A pending row whose message vanished long ago.
+    with sync_session() as session:
+        session.execute(update(Delivery).values(next_retry_at=text_now_minus(minutes=10)))
+    mp = pytest.MonkeyPatch()
+    try:
+        mp.setattr(tasks, "queue_depths", lambda queues: {q: 50_000 for q in queues})
+        assert tasks.dispatch_due_deliveries() == 0
+        assert route.call_count == 0
+
+        mp.setattr(tasks, "queue_depths", lambda queues: {q: 0 for q in queues})
+        assert tasks.dispatch_due_deliveries() == 1
+    finally:
+        mp.undo()
+    # Eager mode delivered it inline.
+    assert route.call_count == 1
+    assert get_delivery(delivery_id).status is DeliveryStatus.SUCCEEDED
+
+
+def text_now_minus(minutes: int) -> object:
+    from datetime import UTC, datetime, timedelta
+
+    return datetime.now(UTC) - timedelta(minutes=minutes)

@@ -4,6 +4,7 @@ from typing import Any
 
 from celery import Task
 
+from app.broker import queue_depths
 from app.celery_app import celery_app
 from app.config import get_settings
 from app.services import delivery as delivery_service
@@ -11,6 +12,9 @@ from app.services import fanout as fanout_service
 from app.services.delivery import OutcomeKind
 
 log = logging.getLogger(__name__)
+
+
+RETRY_QUEUE = "delivery_retries"
 
 
 class RetryableDeliveryError(Exception):
@@ -48,6 +52,7 @@ class DeliveryTask(Task):
     ) -> Any:
         if countdown is None and eta is None and isinstance(exc, RetryableDeliveryError):
             countdown = exc.retry_in
+        options.setdefault("queue", RETRY_QUEUE)
         return super().retry(
             args=args,
             kwargs=kwargs,
@@ -87,12 +92,21 @@ def deliver(self: DeliveryTask, delivery_id: str) -> str:
     if outcome.kind is OutcomeKind.DEFERRED:
         # Circuit open or endpoint rate limited: not a failed attempt, so re-enqueue rather
         # than spend one of the bounded retries.
-        self.apply_async((delivery_id,), countdown=outcome.delay)
+        self.apply_async((delivery_id,), countdown=outcome.delay, queue=RETRY_QUEUE)
     return outcome.kind.value
 
 
 @celery_app.task(name="app.tasks.dispatch_due_deliveries")
 def dispatch_due_deliveries() -> int:
+    try:
+        depths = queue_depths(("deliveries", RETRY_QUEUE))
+    except Exception:
+        log.warning("dispatcher could not read queue depth; skipping this tick")
+        return 0
+    backlog = sum(depths.values())
+    if backlog > get_settings().delivery_dispatch_max_queue_depth:
+        log.info("dispatcher skipped, queues backed up", extra={"backlog": backlog})
+        return 0
     ids = fanout_service.due_overdue_deliveries()
     for delivery_id in ids:
         deliver.delay(str(delivery_id))

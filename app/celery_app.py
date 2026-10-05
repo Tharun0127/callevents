@@ -21,10 +21,13 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     worker_prefetch_multiplier=4,
     broker_connection_retry_on_startup=True,
-    # Separate queues so a backlog of retries cannot starve fanout of fresh events.
+    # Separate queues so a backlog in one stage cannot starve another.
     task_queues=(
         Queue("fanout", durable=True),
         Queue("deliveries", durable=True),
+        # Retries and deferrals get their own queue. Republishing them onto "deliveries" puts
+        # a 1 second retry behind the whole backlog of first attempts.
+        Queue("delivery_retries", durable=True),
         Queue("maintenance", durable=True),
     ),
     task_default_queue="deliveries",

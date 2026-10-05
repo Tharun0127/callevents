@@ -309,7 +309,15 @@ def _send(
     return Outcome(OutcomeKind.RETRY, delay=delay, detail=reason)
 
 
+MIN_DEFER_SECONDS = 0.25
+DEFER_JITTER_SECONDS = 1.0
+
+
 def _defer(delivery_id: uuid.UUID, wait: float, reason: str) -> Outcome:
+    # The token bucket's wait is the time until one token exists, often a few milliseconds. With
+    # thousands of deliveries queued for one endpoint, re-enqueueing all of them at that exact
+    # moment makes them spin against the bucket. A floor plus jitter spreads them out.
+    wait = max(wait, MIN_DEFER_SECONDS) + random.uniform(0, DEFER_JITTER_SECONDS)
     DELIVERY_DEFERRED.labels(reason=reason).inc()
     with sync_session() as session:
         session.execute(
