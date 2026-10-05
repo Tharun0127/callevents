@@ -1,0 +1,73 @@
+[project]
+name = "callevents"
+version = "0.1.0"
+description = "Call events ingestion and webhook fanout service"
+requires-python = ">=3.12,<3.13"
+license = { text = "MIT" }
+dependencies = [
+  "fastapi==0.115.12",
+  "uvicorn[standard]==0.34.2",
+  "sqlalchemy==2.0.40",
+  "alembic==1.15.2",
+  "asyncpg==0.30.0",
+  "psycopg[binary]==3.2.6",
+  "celery==5.5.1",
+  "redis==5.2.1",
+  "httpx==0.28.1",
+  "pydantic==2.11.3",
+  "pydantic-settings==2.9.1",
+  "argon2-cffi==23.1.0",
+  "prometheus-client==0.21.1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.5",
+  "pytest-asyncio==0.26.0",
+  "respx==0.22.0",
+  "ruff==0.11.6",
+  "mypy==1.15.0",
+  "celery-types==0.23.0",
+  "locust==2.35.0",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "ASYNC", "RUF"]
+ignore = ["S101", "S311", "B008", "RUF012"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S105", "S106", "S108"]
+"app/config.py" = ["S105"]  # development defaults, overridden by env in every real deployment
+"app/redis_client.py" = ["S105"]
+"loadtest/*" = ["S105"]
+"scripts/*" = ["S105"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+check_untyped_defs = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+ignore_missing_imports = true
+exclude = ["alembic/versions", "tests", "loadtest"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
