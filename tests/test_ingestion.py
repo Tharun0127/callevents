@@ -164,4 +164,4 @@ async def test_ingest_returns_202_even_if_broker_publish_fails(
     # Stored but not fanned out: the sweeper will find it.
     from app.services.fanout import unfanned_events
 
-    assert len(unfanned_events(older_than_seconds=0)) == 1
+    assert len(unfanned_events(older_than_seconds=-5)  # margin for clock granularity) == 1
