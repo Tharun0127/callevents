@@ -78,3 +78,10 @@ jobs:
         run: docker build -t callevents:ci .
       - name: compose config is valid
         run: docker compose config -q
+      - name: production compose override is valid
+        env:
+          POSTGRES_PASSWORD: ci
+          RABBITMQ_PASSWORD: ci
+          ACMETEL_SIGNING_SECRET: ci
+          VOXLY_SIGNING_SECRET: ci
+        run: docker compose -f docker-compose.yml -f docker-compose.prod.yml config -q

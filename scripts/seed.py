@@ -24,6 +24,9 @@ DEMO_ACCOUNTS = {"acmetel": "AC_demo", "voxly": "vx_demo"}
 
 def seed() -> None:
     s = get_settings()
+    if not s.seed_demo_data:
+        log.info("seed skipped, SEED_DEMO_DATA is off")
+        return
     key_id = parse_key_id(s.demo_api_key)
     if key_id is None:
         sys.exit("DEMO_API_KEY must look like ck_<key_id>_<secret>")

@@ -24,6 +24,7 @@ x-app-env: &app-env
   DEMO_API_KEY: ${DEMO_API_KEY:-ck_demo_0123456789abcdef0123456789abcdef}
   DEMO_ENDPOINT_SECRET: ${DEMO_ENDPOINT_SECRET:-whsec_demo_receiver_secret}
   DEMO_RECEIVER_BASE_URL: http://receiver:8080
+  SEED_DEMO_DATA: ${SEED_DEMO_DATA:-true}
 
 x-app: &app
   build: .
@@ -64,10 +65,15 @@ services:
 
   rabbitmq:
     image: rabbitmq:4.1-management-alpine
+    # RabbitMQ keys its data directory on the node name, which comes from the hostname. A fixed
+    # hostname plus a volume keeps durable queues (pending deliveries) across container recreation.
+    hostname: rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-callevents}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-callevents}
     ports: ["5672:5672", "15672:15672"]
+    volumes:
+      - rabbitmqdata:/var/lib/rabbitmq
     healthcheck:
       test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
       interval: 5s
@@ -122,6 +128,14 @@ services:
         condition: service_healthy
     # Celery warm shutdown waits for running tasks; delivery timeout is 10s.
     stop_grace_period: 60s
+    # The worker serves Prometheus metrics from inside the Celery process, so a response means
+    # the process is alive (not that RabbitMQ is reachable; Celery reconnects on its own).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/metrics' % os.environ.get('WORKER_METRICS_PORT', '9100'), timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   beat:
     <<: *app
@@ -145,3 +159,4 @@ services:
 
 volumes:
   pgdata:
+  rabbitmqdata:

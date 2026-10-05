@@ -1,7 +1,8 @@
 # Railway deploys one service per railway.toml. This describes the API service; the worker,
 # beat and migrate roles reuse the same image with a different start command (see README,
 # "Deployment"). Postgres, Redis and RabbitMQ would be Railway plugins or external services.
-# Not deployed: local docker compose is the supported environment for this project.
+# Set APP_ENV=production, SEED_DEMO_DATA=false, ACMETEL_SIGNING_SECRET, VOXLY_SIGNING_SECRET,
+# DATABASE_URL, REDIS_URL and BROKER_URL on every service. The API listens on Railway's $PORT.
 
 [build]
 builder = "DOCKERFILE"

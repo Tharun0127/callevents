@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -57,9 +57,27 @@ class Settings(BaseSettings):
     worker_metrics_port: int = 9100
 
     # Seed data, used by scripts/seed.py so the stack is usable right after compose up.
+    # Production turns this off: the demo tenant's API key is public in this repo.
+    seed_demo_data: bool = True
     demo_api_key: str = Field(default="ck_demo_0123456789abcdef0123456789abcdef")
     demo_endpoint_secret: str = "whsec_demo_receiver_secret"
     demo_receiver_base_url: str = "http://receiver:8080"
+
+    @model_validator(mode="after")
+    def _no_dev_secrets_in_production(self) -> "Settings":
+        """Refuse to start in production with any secret still at its public development value."""
+        if self.app_env.lower() != "production":
+            return self
+        defaults = type(self).model_fields
+        checked = ["acmetel_signing_secret", "voxly_signing_secret"]
+        if self.seed_demo_data:
+            checked += ["demo_api_key", "demo_endpoint_secret"]
+        unsafe = [name.upper() for name in checked if getattr(self, name) == defaults[name].default]
+        if unsafe:
+            raise ValueError(
+                "APP_ENV=production but these are still development defaults: " + ", ".join(unsafe)
+            )
+        return self
 
     @property
     def async_database_url(self) -> str:

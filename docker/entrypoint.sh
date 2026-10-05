@@ -13,7 +13,8 @@ case "$role" in
   api)
     export PROMETHEUS_MULTIPROC_DIR="${PROMETHEUS_MULTIPROC_DIR:-/tmp/prometheus}"
     rm -rf "$PROMETHEUS_MULTIPROC_DIR" && mkdir -p "$PROMETHEUS_MULTIPROC_DIR"
-    exec uvicorn app.main:app --host 0.0.0.0 --port 8000 \
+    # PORT is injected by Railway, Render and similar platforms; compose uses the default.
+    exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-8000}" \
       --workers "${API_WORKERS:-2}" \
       --timeout-graceful-shutdown "${API_GRACEFUL_SECONDS:-20}" \
       --no-access-log --proxy-headers

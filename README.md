@@ -239,11 +239,25 @@ Everything under `/v1` except ingestion needs `Authorization: Bearer <api key>` 
 
 ## Deployment
 
-This is not deployed anywhere. Local docker compose is the supported environment.
+Not deployed anywhere yet. Two supported paths, both from the same image:
 
-`railway.toml` describes how the API would run on Railway: build from the Dockerfile, run migrations as a pre deploy command, start the `api` role, health check `/readyz`. The worker and beat would be two more services from the same image started with `entrypoint.sh worker` and `entrypoint.sh beat` (exactly one beat), with Postgres and Redis as Railway plugins and RabbitMQ as a template service or CloudAMQP. The same split applies on Render, Fly.io or ECS.
+**Single host with docker compose.** Put the secrets in `.env` (URL safe characters only, they are interpolated into connection URLs) and layer the production override on top:
 
-The service needs five long running processes (API, worker, beat, RabbitMQ, receiver for testing) plus Postgres and Redis. The free tiers of the common platforms (Railway, Render, Fly.io) do not support that many always on services; free web services are put to sleep when idle, which is incompatible with a worker consuming a queue and a scheduler that must keep ticking. Running it there means a paid plan.
+```bash
+cat >> .env <<EOF
+POSTGRES_PASSWORD=...
+RABBITMQ_PASSWORD=...
+ACMETEL_SIGNING_SECRET=...
+VOXLY_SIGNING_SECRET=...
+EOF
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
+
+`docker-compose.prod.yml` sets `APP_ENV=production`, turns the demo seed off, makes compose fail fast if any of those secrets is missing, publishes only the API port (Postgres, Redis, RabbitMQ and the worker metrics port stay on the internal network), drops the RabbitMQ management UI, and leaves the test receiver behind a `test` profile. Put TLS termination in front of port 8000 and keep `/metrics` off the public internet; if the proxy is not on the same host, set `FORWARDED_ALLOW_IPS` so uvicorn trusts its `X-Forwarded-*` headers. With `APP_ENV=production` the app refuses to start while any provider signing secret (or, if seeding, the demo key and endpoint secret) is still at its public development value. Tenants then have to be created directly in the database, since there is no admin API yet.
+
+**A platform such as Railway, Render or Fly.io.** `railway.toml` describes the API service: build from the Dockerfile, run migrations as a pre deploy command, start the `api` role on the platform's `$PORT`, health check `/readyz`. The worker and beat are two more services from the same image started with `entrypoint.sh worker` and `entrypoint.sh beat` (exactly one beat). Postgres and Redis come from the platform's plugins, RabbitMQ from a template service or CloudAMQP. Set `APP_ENV=production`, `SEED_DEMO_DATA=false`, the two provider secrets, `DATABASE_URL`, `REDIS_URL` and `BROKER_URL` on all three services.
+
+The service needs four long running processes (API, worker, beat, RabbitMQ) plus Postgres and Redis. The free tiers of the common platforms do not support that many always on services, and free web services are put to sleep when idle, which is incompatible with a worker consuming a queue and a scheduler that must keep ticking. Running it there means a paid plan.
 
 ## Limitations and what I would change
 
@@ -251,12 +265,12 @@ The service needs five long running processes (API, worker, beat, RabbitMQ, rece
 
 * The test suite (41 tests) passes against real Postgres 16, Redis and RabbitMQ 4, as do `ruff check`, `ruff format --check`, `mypy app`, and an Alembic upgrade, downgrade and `alembic check` (no drift between models and migrations).
 * The full pipeline (signed webhook, dedupe, fanout, signed delivery, retries, metrics, request id propagation into worker logs) was exercised end to end, and the load tests above ran against it.
-* **The docker compose stack itself has not been run.** The development machine had no Docker; Docker Desktop and WSL were installed during this work, but WSL2 needs a reboot to enable the hypervisor and I could not reboot it from the session. Everything was therefore run as native processes on Windows with the same versions. The Dockerfile, entrypoint and compose file were written for Linux and checked as far as was possible without Docker: the compose file parses and its dependency graph is as intended, the image's `pip install .` packages every module, and the entrypoint's `migrate` role was run directly. The cold start acceptance check, `docker compose up --build` from nothing, is the first thing to run once Docker works, and CI builds the image and validates the compose file on every push.
+* The docker compose stack was run from nothing with `docker compose up --build`: migrations and seed ran, every service came up healthy, a signed webhook was ingested, fanned out and delivered to both receiver endpoints, the metrics endpoints reported it, `docker compose stop` gave the worker a warm shutdown, and a restart re-ran the migrate job as a no-op. The production override was run the same way: the seed was skipped, the demo key was rejected, only port 8000 was published, and RabbitMQ kept its durable queues across a container recreate.
 * The GitHub Actions workflow has not run yet because the repository has not been pushed.
 
 **What is not production ready.**
 
-* No TLS, no authentication on `/metrics`, and the demo credentials and secrets in compose are development defaults.
+* No TLS and no authentication on `/metrics`; both are left to the proxy in front (see Deployment).
 * Endpoint secrets are stored unencrypted (see above). API keys are one per tenant with no rotation or scopes. There is no admin API for tenants; the seed script is the only way to create one.
 * Endpoint URLs are not checked for SSRF. A tenant can register `http://169.254.169.254/` or an internal hostname and the worker will POST to it. Production needs URL validation plus egress filtering that blocks private ranges after DNS resolution.
 * No data retention: events, deliveries and dead letters grow forever.
