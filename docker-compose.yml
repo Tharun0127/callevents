@@ -1,0 +1,146 @@
+# One command: `docker compose up --build`
+# Brings up Postgres, Redis, RabbitMQ, runs migrations and the seed once, then starts the API,
+# the Celery worker, Celery beat and a local webhook receiver. Values below are local defaults;
+# put overrides in a .env file next to this one (see .env.example).
+
+x-app-env: &app-env
+  APP_ENV: ${APP_ENV:-development}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql://${POSTGRES_USER:-callevents}:${POSTGRES_PASSWORD:-callevents}@postgres:5432/${POSTGRES_DB:-callevents}
+  REDIS_URL: redis://redis:6379/0
+  BROKER_URL: amqp://${RABBITMQ_USER:-callevents}:${RABBITMQ_PASSWORD:-callevents}@rabbitmq:5672//
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+  DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+  ACMETEL_SIGNING_SECRET: ${ACMETEL_SIGNING_SECRET:-dev-acmetel-secret}
+  VOXLY_SIGNING_SECRET: ${VOXLY_SIGNING_SECRET:-dev-voxly-secret}
+  DELIVERY_TIMEOUT_SECONDS: ${DELIVERY_TIMEOUT_SECONDS:-10}
+  DELIVERY_MAX_ATTEMPTS: ${DELIVERY_MAX_ATTEMPTS:-6}
+  CIRCUIT_FAILURE_THRESHOLD: ${CIRCUIT_FAILURE_THRESHOLD:-5}
+  CIRCUIT_COOLDOWN_SECONDS: ${CIRCUIT_COOLDOWN_SECONDS:-30}
+  ENDPOINT_RATE_PER_SECOND: ${ENDPOINT_RATE_PER_SECOND:-50}
+  ENDPOINT_BURST: ${ENDPOINT_BURST:-100}
+  READ_RATE_LIMIT: ${READ_RATE_LIMIT:-600}
+  READ_RATE_WINDOW_SECONDS: ${READ_RATE_WINDOW_SECONDS:-60}
+  DEMO_API_KEY: ${DEMO_API_KEY:-ck_demo_0123456789abcdef0123456789abcdef}
+  DEMO_ENDPOINT_SECRET: ${DEMO_ENDPOINT_SECRET:-whsec_demo_receiver_secret}
+  DEMO_RECEIVER_BASE_URL: http://receiver:8080
+
+x-app: &app
+  build: .
+  image: callevents:local
+  restart: unless-stopped
+  environment: *app-env
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-callevents}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-callevents}
+      POSTGRES_DB: ${POSTGRES_DB:-callevents}
+    command: ["postgres", "-c", "max_connections=200"]
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4.1-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-callevents}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-callevents}
+    ports: ["5672:5672", "15672:15672"]
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_connectivity"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  migrate:
+    build: .
+    image: callevents:local
+    command: ["migrate"]
+    environment: *app-env
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    command: ["api"]
+    environment:
+      <<: *app-env
+      API_WORKERS: ${API_WORKERS:-2}
+    ports: ["8000:8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).status == 200 else 1)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    <<: *app
+    command: ["worker"]
+    environment:
+      <<: *app-env
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-32}
+    ports: ["9100:9100"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    # Celery warm shutdown waits for running tasks; delivery timeout is 10s.
+    stop_grace_period: 60s
+
+  beat:
+    <<: *app
+    command: ["beat"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  receiver:
+    build: .
+    image: callevents:local
+    command: ["receiver"]
+    restart: unless-stopped
+    environment:
+      FAIL_RATE: ${RECEIVER_FAIL_RATE:-0.1}
+      LATENCY_MS: ${RECEIVER_LATENCY_MS:-20}
+      SIGNING_SECRET: ${DEMO_ENDPOINT_SECRET:-whsec_demo_receiver_secret}
+    ports: ["8080:8080"]
+
+volumes:
+  pgdata:
