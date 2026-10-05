@@ -44,7 +44,7 @@ async def hook(name: str, request: Request) -> Response:
         if not sig_ok:
             _stats["bad_signature"] += 1
             return Response(status_code=401)
-        if random.random() < FAIL_RATE:  # noqa: S311
+        if random.random() < FAIL_RATE:
             _stats["injected_failures"] += 1
             return Response(status_code=500, content=b"injected failure")
         if key in _succeeded_keys:
