@@ -111,7 +111,8 @@ services:
     environment:
       <<: *app-env
       WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-32}
-    ports: ["9100:9100"]
+    # A range so `docker compose up --scale worker=4` gives each replica its own metrics port.
+    ports: ["9100-9103:9100"]
     depends_on:
       migrate:
         condition: service_completed_successfully

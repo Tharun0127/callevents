@@ -1,0 +1,8 @@
+events ingested:         27059
+deliveries succeeded:    37856 (first attempt: 34129)
+deliveries dead:         0
+deliveries outstanding:  6
+lag p50/p95/p99, first attempt: 109612 ms / 145461 ms / 147179 ms
+lag p50/p95/p99, all successes: 110228 ms / 145750 ms / 147455 ms
+lag max: 165.1 s
+receiver: {"requests": 41980, "requests:all-events": 30039, "injected_failures": 4124, "unique_successes": 37856, "requests:completed-only": 11941, "fail_rate": 0.1}

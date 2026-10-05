@@ -15,7 +15,7 @@ os.environ["DATABASE_URL"] = os.environ.get(
     "TEST_DATABASE_URL", "postgresql://callevents:callevents@127.0.0.1:5432/callevents_test"
 )
 os.environ["REDIS_URL"] = os.environ.get("TEST_REDIS_URL", "redis://127.0.0.1:6379/15")
-os.environ.setdefault("BROKER_URL", "amqp://guest:guest@127.0.0.1:5672//")
+os.environ.setdefault("BROKER_URL", "amqp://callevents:callevents@127.0.0.1:5672//")
 os.environ["LOG_LEVEL"] = "WARNING"
 
 import httpx
